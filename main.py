@@ -147,7 +147,7 @@ def tick(runtime: GraphRuntime) -> dict[str, Any]:
     return runtime.resolved
 
 
-# fx nodes---------------------------------------------------
+# FX ---------------------------------------------------
 
 
 def input_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
@@ -213,6 +213,9 @@ def compressor_node(
     return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
 
 
+# Math / Basic ----------------------------------------------------------------
+
+
 def audioparam_rms_node(
     node: GraphNode, inputs: dict[str, Any], effect: None
 ) -> dict[str, Any]:
@@ -239,26 +242,125 @@ def audioparam_peak_node(
     return {"output": audio, "value": value}
 
 
-node_functions: dict[str, FxModuleFn] = {
-    "Input": input_node,
-    "Constant": constant_node,
-    "Gain": gain_node,
-    "Output": output_node,
-    "HighPass": highpass_node,
-    "LowPass": lowpass_node,
-    "Reverb": reverb_node,
-    "Compressor": compressor_node,
-    "AudioToRms": audioparam_rms_node,
-    "AudioToPeak": audioparam_peak_node,
-}
+def add_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+    return {"output": inputs["number 1"] + inputs["number 2"]}
 
-# end fx nodes----------------------------------------------------------------
+
+def multiply_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+    return {"output": inputs["number 1"] * inputs["number 2"]}
+
+
+def subtract_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+    return {"output": inputs["number 1"] - inputs["number 2"]}
+
+
+def divide_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+    divisor = inputs["number 2"]
+    if divisor == 0:
+        raise ValueError("divide_node: division by zero")
+    return {"output": inputs["number 1"] / divisor}
+
+
+def exponent_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+    return {"output": inputs["input"] ** inputs["exponent"]}
+
+
+# Math / Comparison -----------------------------------------------------------
+
+
+def greater_than_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+    return {"output": inputs["this"] > inputs["isGreaterThan"]}
+
+
+def less_than_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+    return {"output": inputs["this"] < inputs["isLessThan"]}
+
+
+# Math / Logic ----------------------------------------------------------------
+
+
+def and_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+    return {"output": bool(inputs["condition 1"]) and bool(inputs["condition 2"])}
+
+
+def or_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+    return {"output": bool(inputs["condition 1"]) or bool(inputs["condition 2"])}
+
+
+def not_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+    return {"output": not bool(inputs["condition"])}
+
+
+# Math / Scaling --------------------------------------------------------------
+
+
+def normalize_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+    span = inputs["maximum"] - inputs["minimum"]
+    if span == 0:
+        return {"output": 0}
+    return {"output": (inputs["input"] - inputs["minimum"]) / span}
+
+
+def floor_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+    return {"output": max(inputs["input"], inputs["floor"])}
+
+
+def ceiling_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+    return {"output": min(inputs["input"], inputs["ceiling"])}
 
 
 def get_graph() -> Graph:
     effects_path = Path(__file__).parent.parent / "effects.json"
     with effects_path.open() as f:
         return json.load(f)
+
+
+node_functions: dict[str, FxModuleFn] = {
+    "Input": input_node,
+    "Output": output_node,
+    "Constant": constant_node,
+    # FX
+    "Gain": gain_node,
+    "Reverb": reverb_node,
+    "Compressor": compressor_node,
+    "HighPass": highpass_node,
+    "LowPass": lowpass_node,
+    # Math / Basic
+    "Add": add_node,
+    "Multiply": multiply_node,
+    "Subtract": subtract_node,
+    "Divide": divide_node,
+    "Exponent": exponent_node,
+    # Math / Comparison
+    "GreaterThan": greater_than_node,
+    "LessThan": less_than_node,
+    # Math / Logic
+    "And": and_node,
+    "Or": or_node,
+    "Not": not_node,
+    # Math / Scaling
+    "Normalize": normalize_node,
+    "Floor": floor_node,
+    "Ceiling": ceiling_node,
+    "AudioToRms": audioparam_rms_node,
+    "AudioToPeak": audioparam_peak_node,
+}
 
 
 def main():
