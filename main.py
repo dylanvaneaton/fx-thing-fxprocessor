@@ -1,10 +1,247 @@
 import jack
 import start
-from pedalboard import Reverb
+from pedalboard import (
+    Compressor,
+    Gain,
+    Reverb,
+    HighpassFilter,
+    LowpassFilter,
+)
 from config import SAMPLE_RATE
+import json
+from pathlib import Path
+from typing import Any, Literal, TypedDict, Callable
+from dataclasses import dataclass, field
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import threading
+
+NodeHandleType = Literal["number", "boolean", "audio"]
+
+
+graph_lock = threading.Lock()
+
+
+class GraphReloader(FileSystemEventHandler):
+    def __init__(self, runtime: GraphRuntime):
+        super().__init__()
+        self.runtime = runtime
+
+    def on_modified(self, event):
+        if event.src_path.endswith("effects.json"):
+            print("Reloading effects.json...")
+            new_graph = get_graph()
+            new_effects = instantiate_effects(new_graph)
+            with graph_lock:
+                self.runtime.graph = new_graph
+                self.runtime.effects = new_effects
+
+
+class NodeHandle(TypedDict):
+    name: str
+    type: NodeHandleType
+
+
+class GraphNode(TypedDict, total=False):
+    id: str
+    type: str
+    data: dict[str, Any]
+
+
+class GraphEdge(TypedDict):
+    source: str
+    sourceHandle: str
+    target: str
+    targetHandle: str
+
+
+class Graph(TypedDict):
+    nodes: list[GraphNode]
+    edges: list[GraphEdge]
+    processingOrder: list[str]
+
+
+FxModuleFn = Callable[[GraphNode, dict[str, Any], Any], dict[str, Any]]
+
+
+# setup (once)
+@dataclass
+class GraphRuntime:
+    graph: Graph
+    node_functions: dict[str, FxModuleFn]
+    resolved: dict[str, Any] = field(default_factory=dict)
+    effects: dict[str, Any] = field(default_factory=dict)
+    context: dict[str, Any] = field(default_factory=dict)
+
+
+# --- Effect Instantiation ---
+
+
+def instantiate_effects(graph: Graph) -> dict[str, Any]:
+    effects: dict[str, Any] = {}
+    for node in graph["nodes"]:
+        node_id = node["id"]
+        node_type = node["type"]
+        if node_type == "Gain":
+            effects[node_id] = Gain()
+        if node_type == "Compressor":
+            effects[node_id] = Compressor()
+        if node_type == "Reverb":
+            effects[node_id] = Reverb()
+        if node_type == "LowPass":
+            effects[node_id] = LowpassFilter()
+        if node_type == "HighPass":
+            effects[node_id] = HighpassFilter()
+
+    return effects
+
+
+# --- Core Algorithm ---
+
+
+def resolve_handle_key(node_id: str, handle_name: str) -> str:
+    return f"{node_id}::{handle_name}"
+
+
+def gather_inputs(
+    node_id: str,
+    edges: list[GraphEdge],
+    resolved: dict[str, Any],
+) -> dict[str, Any]:
+    inputs: dict[str, Any] = {}
+    for edge in edges:
+        if edge["target"] == node_id:
+            source_key = resolve_handle_key(edge["source"], edge["sourceHandle"])
+            inputs[edge["targetHandle"]] = resolved.get(source_key)
+    return inputs
+
+
+def process_node(node: GraphNode, runtime: GraphRuntime) -> None:
+    node_type = node["type"]
+    fx_fn = runtime.node_functions.get(node_type)
+    if fx_fn is None:
+        raise ValueError(f"No fx module registered for node type: '{node_type}'")
+
+    inputs = gather_inputs(node["id"], runtime.graph["edges"], runtime.resolved)
+
+    # Inject context into Input nodes
+    if node_type == "Input":
+        inputs.update(runtime.context)
+
+    effect = runtime.effects.get(node["id"])
+    outputs = fx_fn(node, inputs, effect)
+    for handle_name, value in outputs.items():
+        key = resolve_handle_key(node["id"], handle_name)
+        runtime.resolved[key] = value
+
+
+def tick(runtime: GraphRuntime) -> dict[str, Any]:
+    runtime.resolved = {}
+    node_index = {node["id"]: node for node in runtime.graph["nodes"]}
+    for node_id in runtime.graph["processingOrder"]:
+        node = node_index.get(node_id)
+        if node is None:
+            raise ValueError(f"processingOrder references unknown node id: '{node_id}'")
+        process_node(node, runtime)
+    return runtime.resolved
+
+
+# fx nodes---------------------------------------------------
+
+
+def input_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+    return {"output": inputs["audio"]}
+
+
+def constant_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+    data = node.get("data", {})
+    value: float = float(data.get("value", 0.0))
+    return {"output": value}
+
+
+def gain_node(node: GraphNode, inputs: dict[str, Any], effect: Gain) -> dict[str, Any]:
+    db = inputs.get("db")
+    if db is None:
+        raise ValueError(f"gain_node missing 'db'. inputs: {inputs}")
+    effect.gain_db = float(db)
+    return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
+
+
+def output_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+    return {"output": inputs["input"]}
+
+
+def highpass_node(
+    node: GraphNode, inputs: dict[str, Any], effect: HighpassFilter
+) -> dict[str, Any]:
+    cutoff = inputs.get("cutoff (hz)")
+    effect.cutoff_frequency_hz = float(cutoff)  # type: ignore
+    return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
+
+
+def lowpass_node(
+    node: GraphNode, inputs: dict[str, Any], effect: LowpassFilter
+) -> dict[str, Any]:
+    cutoff = inputs.get("cutoff (hz)")
+    effect.cutoff_frequency_hz = float(cutoff)  # type: ignore
+    return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
+
+
+def reverb_node(
+    node: GraphNode, inputs: dict[str, Any], effect: Reverb
+) -> dict[str, Any]:
+    effect.room_size = inputs.get("roomSize")  # type: ignore
+    effect.damping = inputs.get("damping")  # type: ignore
+    effect.wet_level = inputs.get("wetLevel")  # type: ignore
+    effect.dry_level = inputs.get("dryLevel")  # type: ignore
+    effect.width = inputs.get("width")  # type: ignore
+    return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
+
+
+def compressor_node(
+    node: GraphNode, inputs: dict[str, Any], effect: Compressor
+) -> dict[str, Any]:
+    effect.threshold_db = inputs.get("threshold (db)")  # type: ignore
+    effect.ratio = inputs.get("ratio (x:1)")  # type: ignore
+    effect.attack_ms = inputs.get("attack (ms)")  # type: ignore
+    effect.release_ms = inputs.get("release (ms)")  # type: ignore
+    return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
+
+
+node_functions: dict[str, FxModuleFn] = {
+    "Input": input_node,
+    "Constant": constant_node,
+    "Gain": gain_node,
+    "Output": output_node,
+    "HighPass": highpass_node,
+    "LowPass": lowpass_node,
+    "Reverb": reverb_node,
+    "Compressor": compressor_node,
+}
+
+# end fx nodes----------------------------------------------------------------
+
+
+def get_graph() -> Graph:
+    effects_path = Path(__file__).parent.parent / "effects.json"
+    with effects_path.open() as f:
+        return json.load(f)
 
 
 def main():
+
+    graph = get_graph()
+
+    # setup (once)
+    runtime = GraphRuntime(
+        graph=graph,
+        node_functions=node_functions,
+        effects=instantiate_effects(graph),
+    )
 
     # After determining if jack is open and if so closing it for a restart, it then prompts the user for a device from a list to start jack on.
     start.ensure_jack_running()
@@ -14,26 +251,28 @@ def main():
     # enstantiate a jack client, which is how we get digital audio from a physical sound card
     client = jack.Client("fx-thing-fxprocessor")  # enstantiates jack client
 
-    # enstantiate a reverb to be used in the callback
-    reverb = Reverb()
-
     # registers an input to our jack client. without this, the program cannot be connected through jack to the physical sound device input
     inport = client.inports.register("input_1")
     # same as above but for the output. this is where the program will output the processed audio so it can be connected to the physical out through jack
     outport = client.outports.register("output_1")
 
-    @client.set_process_callback  # as far as i understand this means the function below it will be set as the jack client callback function, similar to declaring the function then immediately passing it into the name of the decorator.
+    @client.set_process_callback
     def process(frames):
-        # this gets the audio as a numpy array. it is one dimensional, and represents one buffer period of sound.
-        audio = inport.get_array()
+        # Get and reshape the JACK buffer
+        audio_jack = inport.get_array()
+        audio = audio_jack.reshape(1, -1)
 
-        # pedalboard expects a two dimensional array arranged as (channel, samples). jack does not have fundementally store multiple channels as one array, hence the diffefrence.
-        audio_2d = audio.reshape(1, -1)
+        # Inject into the runtime context so Input nodes can access it
+        runtime.context = {"audio": audio}
 
-        processed = reverb.process(audio_2d, SAMPLE_RATE, reset=False)
+        # Run the graph
+        with graph_lock:
+            resolved = tick(runtime)
 
-        # though i don't quite understand the difference, this copies the processed array into the outport array. the : is telling numpy to copy the values of the processed array into the outport array instead of assigning the outport array to a new array with the new info because apparently that will not work.
-        outport.get_array()[:] = processed[0]
+        # Pull the output back out — find the output node's audio
+        output_audio = resolved.get("Output::output")
+        if output_audio is not None:
+            outport.get_array()[:] = output_audio[0]
 
     @client.set_shutdown_callback
     def shutdown(status, reason):
@@ -41,17 +280,45 @@ def main():
 
     # this activates the client and keeps it running until the with is exited.
     with client:
-        # this connects the jack port for the mic on the focusrite to the inport in this client.
         client.connect(chosen_jack_inport, inport)
-
-        # this connects the outport of our client to the left channel on the focusrite
         client.connect(outport, "system:playback_1")
-
-        # same as above, but left channel, so it plays out of the stereo out instead of just left
         client.connect(outport, "system:playback_2")
 
-        # when enter is pressed it will exit out of the block
-        input("Processing running. Press enter to exit.")
+        observer = Observer()
+        observer.schedule(
+            GraphReloader(runtime),
+            path=str(Path(__file__).parent.parent),
+            recursive=False,
+        )
+        observer.start()
+
+        try:
+            while True:
+                user_input = (
+                    input(
+                        "Type change or c to change jack input, or type exit to close.\n> "
+                    )
+                    .strip()
+                    .lower()
+                )
+                if user_input == "exit":
+                    break
+                elif user_input in ("change", "c"):
+                    client.disconnect(chosen_jack_inport, inport)
+                    chosen_jack_inport = start.choose_jack_inport()
+                    client.connect(chosen_jack_inport, inport)
+        finally:
+            observer.stop()
+            observer.join()
+
+
+# # takes in the stream of audio from jack and prepares it for pedalboard.
+# def input_node(jack_inport):
+#     # this gets the audio as a numpy array. it is one dimensional, and represents one buffer period of sound.
+#     audio_jack = jack_inport.get_array()
+#     # pedalboard expects a two dimensional array arranged as (channel, samples). jack does not have fundementally store multiple channels as one array, hence the diffefrence.
+#     audio = audio_jack.reshape(1, -1)
+#     return audio
 
 
 if __name__ == "__main__":
