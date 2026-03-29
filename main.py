@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import threading
+import numpy as np
 
 NodeHandleType = Literal["number", "boolean", "audio"]
 
@@ -212,6 +213,32 @@ def compressor_node(
     return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
 
 
+def audioparam_rms_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+
+    audio = inputs.get("input")
+
+    if audio is None:
+        return {"output": None, "value": 0.0}
+    value = float(np.sqrt(np.mean(audio**2)))
+
+    return {"output": audio, "value": value}
+
+
+def audioparam_peak_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+
+    audio = inputs.get("input")
+
+    if audio is None:
+        return {"output": None, "value": 0.0}
+
+    value = float(np.max(np.abs(audio)))
+    return {"output": audio, "value": value}
+
+
 node_functions: dict[str, FxModuleFn] = {
     "Input": input_node,
     "Constant": constant_node,
@@ -221,6 +248,8 @@ node_functions: dict[str, FxModuleFn] = {
     "LowPass": lowpass_node,
     "Reverb": reverb_node,
     "Compressor": compressor_node,
+    "AudioToRms": audioparam_rms_node,
+    "AudioToPeak": audioparam_peak_node,
 }
 
 # end fx nodes----------------------------------------------------------------
