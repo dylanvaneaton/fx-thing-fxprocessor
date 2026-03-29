@@ -7,7 +7,7 @@ from pedalboard import (
     HighpassFilter,
     LowpassFilter,
 )
-from config import SAMPLE_RATE
+from config import SAMPLE_RATE, BUFFER_SIZE
 import json
 from pathlib import Path
 from typing import Any, Literal, TypedDict, Callable
@@ -241,6 +241,22 @@ def audioparam_peak_node(
     return {"output": value}
 
 
+def mix_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+    a = inputs.get("input 1")
+    b = inputs.get("input 2")
+    a_level: float = float(inputs.get("a_level") or 1.0)
+    b_level: float = float(inputs.get("b_level") or 1.0)
+
+    if a is None and b is None:
+        return {"output": np.zeros((1, 1), dtype=np.float32)}
+    if a is None:
+        return {"output": b * b_level}
+    if b is None:
+        return {"output": a * a_level}
+
+    return {"output": np.clip((a * a_level) + (b * b_level), -1.0, 1.0)}
+
+
 def add_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
     return {"output": inputs["number 1"] + inputs["number 2"]}
 
@@ -326,9 +342,9 @@ def ceiling_node(
 
 def sine_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
     data = node.get("data", {})
-    amplitude: float = float(data.get("amplitude", 1.0))
-    frequency: float = float(data.get("frequency", 1.0))
-    buffer_size: int = int(data.get("buffer_size", 256))
+    amplitude: float = float(inputs.get("amplitude", 1.0))
+    frequency: float = float(inputs.get("frequency (hz)", 1.0))
+    buffer_size: int = int(data.get("buffer_size", BUFFER_SIZE))
 
     phase: float = float(data.get("phase", 0.0))
 
@@ -345,7 +361,7 @@ def sine_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str
 
     return {
         "output": audio,  # wire to audio inputs
-        "value": value,  # wire to param inputs like db, cutoff etc.
+        "raw": value,  # wire to param inputs like db, cutoff etc.
     }
 
 
@@ -385,6 +401,7 @@ node_functions: dict[str, FxModuleFn] = {
     "AudioToRms": audioparam_rms_node,
     "AudioToPeak": audioparam_peak_node,
     "SineWave": sine_node,
+    "Mixer": mix_node,
 }
 
 
