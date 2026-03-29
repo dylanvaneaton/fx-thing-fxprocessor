@@ -225,8 +225,7 @@ def audioparam_rms_node(
     if audio is None:
         return {"output": None, "value": 0.0}
     value = float(np.sqrt(np.mean(audio**2)))
-
-    return {"output": audio, "value": value}
+    return {"output": value}
 
 
 def audioparam_peak_node(
@@ -239,7 +238,7 @@ def audioparam_peak_node(
         return {"output": None, "value": 0.0}
 
     value = float(np.max(np.abs(audio)))
-    return {"output": audio, "value": value}
+    return {"output": value}
 
 
 def add_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
@@ -325,6 +324,31 @@ def ceiling_node(
     return {"output": min(inputs["input"], inputs["ceiling"])}
 
 
+def sine_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+    data = node.get("data", {})
+    amplitude: float = float(data.get("amplitude", 1.0))
+    frequency: float = float(data.get("frequency", 1.0))
+    buffer_size: int = int(data.get("buffer_size", 256))
+
+    phase: float = float(data.get("phase", 0.0))
+
+    t = np.arange(buffer_size) / SAMPLE_RATE
+    sine = amplitude * np.sin(2 * np.pi * frequency * t + phase)
+
+    new_phase = (phase + 2 * np.pi * frequency * buffer_size / SAMPLE_RATE) % (
+        2 * np.pi
+    )
+    data["phase"] = new_phase
+
+    audio = sine.astype(np.float32).reshape(1, -1)  # (1, buffer_size) for pedalboard
+    value = float(sine[-1])  # scalar for param modulation
+
+    return {
+        "output": audio,  # wire to audio inputs
+        "value": value,  # wire to param inputs like db, cutoff etc.
+    }
+
+
 def get_graph() -> Graph:
     effects_path = Path(__file__).parent.parent / "effects.json"
     with effects_path.open() as f:
@@ -360,6 +384,7 @@ node_functions: dict[str, FxModuleFn] = {
     "Ceiling": ceiling_node,
     "AudioToRms": audioparam_rms_node,
     "AudioToPeak": audioparam_peak_node,
+    "SineWave": sine_node,
 }
 
 
