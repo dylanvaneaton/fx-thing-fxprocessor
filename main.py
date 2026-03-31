@@ -7,7 +7,7 @@ from pedalboard import (
     HighpassFilter,
     LowpassFilter,
 )
-from config import SAMPLE_RATE
+from config import SAMPLE_RATE, BUFFER_SIZE
 import json
 from pathlib import Path
 from typing import Any, Literal, TypedDict, Callable
@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import threading
+import numpy as np
 
 NodeHandleType = Literal["number", "boolean", "audio"]
 
@@ -211,64 +212,164 @@ def compressor_node(
     effect.release_ms = inputs.get("release (ms)")  # type: ignore
     return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
 
+
 # Math / Basic ----------------------------------------------------------------
+
+
+def audioparam_rms_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+
+    audio = inputs.get("input")
+
+    if audio is None:
+        return {"output": None, "value": 0.0}
+    value = float(np.sqrt(np.mean(audio**2)))
+    return {"output": value}
+
+
+def audioparam_peak_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
+
+    audio = inputs.get("input")
+
+    if audio is None:
+        return {"output": None, "value": 0.0}
+
+    value = float(np.max(np.abs(audio)))
+    return {"output": value}
+
+
+def mix_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+    a = inputs.get("input 1")
+    b = inputs.get("input 2")
+    a_level: float = float(inputs.get("a_level") or 1.0)
+    b_level: float = float(inputs.get("b_level") or 1.0)
+
+    if a is None and b is None:
+        return {"output": np.zeros((1, 1), dtype=np.float32)}
+    if a is None:
+        return {"output": b * b_level}
+    if b is None:
+        return {"output": a * a_level}
+
+    return {"output": np.clip((a * a_level) + (b * b_level), -1.0, 1.0)}
+
 
 def add_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
     return {"output": inputs["number 1"] + inputs["number 2"]}
 
-def multiply_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+
+def multiply_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
     return {"output": inputs["number 1"] * inputs["number 2"]}
 
-def subtract_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+
+def subtract_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
     return {"output": inputs["number 1"] - inputs["number 2"]}
 
-def divide_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+
+def divide_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
     divisor = inputs["number 2"]
     if divisor == 0:
         raise ValueError("divide_node: division by zero")
     return {"output": inputs["number 1"] / divisor}
 
-def exponent_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+
+def exponent_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
     return {"output": inputs["input"] ** inputs["exponent"]}
+
 
 # Math / Comparison -----------------------------------------------------------
 
-def greater_than_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+
+def greater_than_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
     return {"output": inputs["this"] > inputs["isGreaterThan"]}
 
-def less_than_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+
+def less_than_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
     return {"output": inputs["this"] < inputs["isLessThan"]}
 
+
 # Math / Logic ----------------------------------------------------------------
+
 
 def and_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
     return {"output": bool(inputs["condition 1"]) and bool(inputs["condition 2"])}
 
+
 def or_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
     return {"output": bool(inputs["condition 1"]) or bool(inputs["condition 2"])}
+
 
 def not_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
     return {"output": not bool(inputs["condition"])}
 
+
 # Math / Scaling --------------------------------------------------------------
 
-def normalize_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+
+def normalize_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
     span = inputs["maximum"] - inputs["minimum"]
     if span == 0:
-        return 0;
+        return {"output": 0}
     return {"output": (inputs["input"] - inputs["minimum"]) / span}
+
 
 def floor_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
     return {"output": max(inputs["input"], inputs["floor"])}
 
-def ceiling_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+
+def ceiling_node(
+    node: GraphNode, inputs: dict[str, Any], effect: None
+) -> dict[str, Any]:
     return {"output": min(inputs["input"], inputs["ceiling"])}
+
+
+def sine_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+    data = node.get("data", {})
+    amplitude: float = float(inputs.get("amplitude", 1.0))
+    frequency: float = float(inputs.get("frequency (hz)", 1.0))
+    buffer_size: int = int(data.get("buffer_size", BUFFER_SIZE))
+
+    phase: float = float(data.get("phase", 0.0))
+
+    t = np.arange(buffer_size) / SAMPLE_RATE
+    sine = amplitude * np.sin(2 * np.pi * frequency * t + phase)
+
+    new_phase = (phase + 2 * np.pi * frequency * buffer_size / SAMPLE_RATE) % (
+        2 * np.pi
+    )
+    data["phase"] = new_phase
+
+    audio = sine.astype(np.float32).reshape(1, -1)  # (1, buffer_size) for pedalboard
+    value = float(sine[-1])  # scalar for param modulation
+
+    return {
+        "output": audio,  # wire to audio inputs
+        "raw": value,  # wire to param inputs like db, cutoff etc.
+    }
 
 
 def get_graph() -> Graph:
     effects_path = Path(__file__).parent.parent / "effects.json"
     with effects_path.open() as f:
         return json.load(f)
+
 
 node_functions: dict[str, FxModuleFn] = {
     "Input": input_node,
@@ -297,6 +398,10 @@ node_functions: dict[str, FxModuleFn] = {
     "Normalize": normalize_node,
     "Floor": floor_node,
     "Ceiling": ceiling_node,
+    "AudioToRms": audioparam_rms_node,
+    "AudioToPeak": audioparam_peak_node,
+    "SineWave": sine_node,
+    "Mixer": mix_node,
 }
 
 
@@ -315,6 +420,10 @@ def main():
     start.ensure_jack_running()
     # Choose jack capture to use for the input
     chosen_jack_inport = start.choose_jack_inport()
+    print("\nNow choose left out.")
+    chosen_left_outport = start.choose_jack_outport()
+    print("\nNow choose right out.")
+    chosen_right_outport = start.choose_jack_outport()
 
     # enstantiate a jack client, which is how we get digital audio from a physical sound card
     client = jack.Client("fx-thing-fxprocessor")  # enstantiates jack client
@@ -349,8 +458,8 @@ def main():
     # this activates the client and keeps it running until the with is exited.
     with client:
         client.connect(chosen_jack_inport, inport)
-        client.connect(outport, "system:playback_1")
-        client.connect(outport, "system:playback_2")
+        client.connect(outport, chosen_left_outport)
+        client.connect(outport, chosen_right_outport)
 
         observer = Observer()
         observer.schedule(
