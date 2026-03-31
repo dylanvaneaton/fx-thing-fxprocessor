@@ -88,13 +88,29 @@ def start_jack():
 
 
 def ensure_jack_running():
-    pid = get_jack_pid()
-    if pid:
-        print(f"JACK already running (pid {pid}), stopping...")
-        stop_jack(pid)
+    if choose_jack_or_pipewire_jack():
+        pid = get_jack_pid()
+        if pid:
+            print(f"JACK already running (pid {pid}), stopping...")
+            stop_jack(pid)
+        else:
+            print("JACK not running, proceeding with start")
+        start_jack()
     else:
-        print("JACK not running, proceeding with start")
-    start_jack()
+        subprocess.run(
+            [
+                "pw-metadata",
+                "-n",
+                "settings",
+                "0",
+                "clock.force-quantum",
+                str(BUFFER_SIZE),
+            ]
+        )
+        subprocess.run(
+            ["pw-metadata", "-n", "settings", "0", "clock.force-rate", str(SAMPLE_RATE)]
+        )
+        return False
 
 
 def choose_jack_inport():
@@ -121,3 +137,38 @@ def choose_jack_inport():
             print(f"Selected: {chosen_capture_port}")
             return chosen_capture_port
         print(f"Invalid choice, enter a number between 0 and {len(capture_ports) - 1}")
+
+
+def choose_jack_outport():
+    result = subprocess.run(["jack_lsp"], capture_output=True, text=True)
+
+    playback_ports = [
+        line.strip()
+        for line in result.stdout.splitlines()
+        if not re.search(r"capture", line, re.IGNORECASE)
+    ]
+
+    if not playback_ports:
+        print("No JACK playback ports found.")
+        return None
+
+    print("\nAvailable JACK playback Ports:")
+    for i, port in enumerate(playback_ports):
+        print(f"  [{i}] {port}")
+
+    while True:
+        choice = input("\nSelect output number: ").strip()
+        if choice.isdigit() and int(choice) < len(playback_ports):
+            chosen_playback_port = playback_ports[int(choice)]
+            print(f"Selected: {chosen_playback_port}")
+            return chosen_playback_port
+        print(f"Invalid choice, enter a number between 0 and {len(playback_ports) - 1}")
+
+
+def choose_jack_or_pipewire_jack():
+    while True:
+        choice = input("\nUse raw JACK (j) or pipewire-jack (p) ?\n> ").strip().lower()
+        if choice == "j":
+            return True
+        elif choice == "p":
+            return False

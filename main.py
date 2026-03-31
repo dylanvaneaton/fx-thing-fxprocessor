@@ -420,6 +420,10 @@ def main():
     start.ensure_jack_running()
     # Choose jack capture to use for the input
     chosen_jack_inport = start.choose_jack_inport()
+    print("\nNow choose left out.")
+    chosen_left_outport = start.choose_jack_outport()
+    print("\nNow choose right out.")
+    chosen_right_outport = start.choose_jack_outport()
 
     # enstantiate a jack client, which is how we get digital audio from a physical sound card
     client = jack.Client("fx-thing-fxprocessor")  # enstantiates jack client
@@ -454,8 +458,8 @@ def main():
     # this activates the client and keeps it running until the with is exited.
     with client:
         client.connect(chosen_jack_inport, inport)
-        client.connect(outport, "system:playback_1")
-        client.connect(outport, "system:playback_2")
+        client.connect(outport, chosen_left_outport)
+        client.connect(outport, chosen_right_outport)
 
         observer = Observer()
         observer.schedule(
