@@ -166,6 +166,8 @@ def constant_node(
 
 
 def gain_node(node: GraphNode, inputs: dict[str, Any], effect: Gain) -> dict[str, Any]:
+    if inputs.get("disabled", False):
+        return {"output": inputs["input"]}
     db: float = float(inputs.get("db", 0.0))
     effect.gain_db = db
     return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
@@ -180,22 +182,64 @@ def output_node(
 def highpass_node(
     node: GraphNode, inputs: dict[str, Any], effect: HighpassFilter
 ) -> dict[str, Any]:
-    cutoff: float = float(inputs.get("cutoff (hz)", 10000))
-    effect.cutoff_frequency_hz = cutoff
-    return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
+    if inputs.get("disabled", False):
+        return {"output": inputs["input"]}
+    data = node.get("data", {})
+    cutoff = float(inputs.get("cutoff (hz)") or 1000.0)
+    cutoff = max(20.0, min(20000.0, cutoff))
+
+    prev = float(data.get("prev_cutoff", cutoff))
+    audio = inputs["input"]
+    buffer_size = audio.shape[1]
+    steps = 8  # process in 8 sub-blocks
+    step_size = buffer_size // steps
+    output_chunks = []
+
+    for i in range(steps):
+        # interpolate cutoff linearly across the buffer
+        t = i / steps
+        interpolated = prev + t * (cutoff - prev)
+        effect.cutoff_frequency_hz = interpolated
+        chunk = audio[:, i * step_size : (i + 1) * step_size]
+        output_chunks.append(effect.process(chunk, SAMPLE_RATE, reset=False))
+
+    data["prev_cutoff"] = cutoff
+    return {"output": np.concatenate(output_chunks, axis=1)}
 
 
 def lowpass_node(
     node: GraphNode, inputs: dict[str, Any], effect: LowpassFilter
 ) -> dict[str, Any]:
-    cutoff: float = float(inputs.get("cutoff (hz)", 10000))
-    effect.cutoff_frequency_hz = cutoff
-    return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
+    if inputs.get("disabled", False):
+        return {"output": inputs["input"]}
+    data = node.get("data", {})
+    cutoff = float(inputs.get("cutoff (hz)") or 1000.0)
+    cutoff = max(20.0, min(20000.0, cutoff))
+
+    prev = float(data.get("prev_cutoff", cutoff))
+    audio = inputs["input"]
+    buffer_size = audio.shape[1]
+    steps = 8  # process in 8 sub-blocks
+    step_size = buffer_size // steps
+    output_chunks = []
+
+    for i in range(steps):
+        # interpolate cutoff linearly across the buffer
+        t = i / steps
+        interpolated = prev + t * (cutoff - prev)
+        effect.cutoff_frequency_hz = interpolated
+        chunk = audio[:, i * step_size : (i + 1) * step_size]
+        output_chunks.append(effect.process(chunk, SAMPLE_RATE, reset=False))
+
+    data["prev_cutoff"] = cutoff
+    return {"output": np.concatenate(output_chunks, axis=1)}
 
 
 def reverb_node(
     node: GraphNode, inputs: dict[str, Any], effect: Reverb
 ) -> dict[str, Any]:
+    if inputs.get("disabled", False):
+        return {"output": inputs["input"]}
     effect.room_size = float(inputs.get("roomSize", 0.5))
     effect.damping = float(inputs.get("damping", 0.5))
     effect.wet_level = float(inputs.get("wetLevel", 0.5))
@@ -207,6 +251,8 @@ def reverb_node(
 def compressor_node(
     node: GraphNode, inputs: dict[str, Any], effect: Compressor
 ) -> dict[str, Any]:
+    if inputs.get("disabled", False):
+        return {"output": inputs["input"]}
     effect.threshold_db = float(inputs.get("threshold (db)", 0.0))
     effect.ratio = float(inputs.get("ratio (x:1)", 1.0))
     effect.attack_ms = float(inputs.get("attack (ms)", 0.0))
@@ -215,6 +261,12 @@ def compressor_node(
 
 
 # Math / Basic ----------------------------------------------------------------
+
+
+def mute_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str, Any]:
+    if inputs.get("disabled", False):
+        return {"output": inputs["input"]}
+    return {"output": np.zeros((1, BUFFER_SIZE), dtype=np.float32)}
 
 
 def audioparam_rms_node(
