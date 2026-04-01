@@ -462,6 +462,7 @@ node_functions: dict[str, FxModuleFn] = {
     "AudioToPeak": audioparam_peak_node,
     "SineWave": sine_node,
     "Mixer": mix_node,
+    "Mute": mute_node,
 }
 
 
