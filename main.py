@@ -30,6 +30,9 @@ class GraphReloader(FileSystemEventHandler):
 
     def on_modified(self, event):
         if event.src_path.endswith("effects.json"):
+            if get_graph() is None:
+                print("Read a change, but it isn't json. Waiting till next change.")
+                return
             print("Reloading effects.json...")
             new_graph = get_graph()
             new_effects = instantiate_effects(new_graph)
@@ -163,10 +166,8 @@ def constant_node(
 
 
 def gain_node(node: GraphNode, inputs: dict[str, Any], effect: Gain) -> dict[str, Any]:
-    db = inputs.get("db")
-    if db is None:
-        raise ValueError(f"gain_node missing 'db'. inputs: {inputs}")
-    effect.gain_db = float(db)
+    db: float = float(inputs.get("db", 0.0))
+    effect.gain_db = db
     return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
 
 
@@ -179,37 +180,37 @@ def output_node(
 def highpass_node(
     node: GraphNode, inputs: dict[str, Any], effect: HighpassFilter
 ) -> dict[str, Any]:
-    cutoff = inputs.get("cutoff (hz)")
-    effect.cutoff_frequency_hz = float(cutoff)  # type: ignore
+    cutoff: float = float(inputs.get("cutoff (hz)", 10000))
+    effect.cutoff_frequency_hz = cutoff
     return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
 
 
 def lowpass_node(
     node: GraphNode, inputs: dict[str, Any], effect: LowpassFilter
 ) -> dict[str, Any]:
-    cutoff = inputs.get("cutoff (hz)")
-    effect.cutoff_frequency_hz = float(cutoff)  # type: ignore
+    cutoff: float = float(inputs.get("cutoff (hz)", 10000))
+    effect.cutoff_frequency_hz = cutoff
     return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
 
 
 def reverb_node(
     node: GraphNode, inputs: dict[str, Any], effect: Reverb
 ) -> dict[str, Any]:
-    effect.room_size = inputs.get("roomSize")  # type: ignore
-    effect.damping = inputs.get("damping")  # type: ignore
-    effect.wet_level = inputs.get("wetLevel")  # type: ignore
-    effect.dry_level = inputs.get("dryLevel")  # type: ignore
-    effect.width = inputs.get("width")  # type: ignore
+    effect.room_size = float(inputs.get("roomSize", 0.5))
+    effect.damping = float(inputs.get("damping", 0.5))
+    effect.wet_level = float(inputs.get("wetLevel", 0.5))
+    effect.dry_level = float(inputs.get("dryLevel", 0.5))
+    effect.width = float(inputs.get("width", 0.5))
     return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
 
 
 def compressor_node(
     node: GraphNode, inputs: dict[str, Any], effect: Compressor
 ) -> dict[str, Any]:
-    effect.threshold_db = inputs.get("threshold (db)")  # type: ignore
-    effect.ratio = inputs.get("ratio (x:1)")  # type: ignore
-    effect.attack_ms = inputs.get("attack (ms)")  # type: ignore
-    effect.release_ms = inputs.get("release (ms)")  # type: ignore
+    effect.threshold_db = float(inputs.get("threshold (db)", 0.0))
+    effect.ratio = float(inputs.get("ratio (x:1)", 1.0))
+    effect.attack_ms = float(inputs.get("attack (ms)", 0.0))
+    effect.release_ms = float(inputs.get("release (ms)", 0.0))
     return {"output": effect.process(inputs["input"], SAMPLE_RATE, reset=False)}
 
 
@@ -223,7 +224,7 @@ def audioparam_rms_node(
     audio = inputs.get("input")
 
     if audio is None:
-        return {"output": None, "value": 0.0}
+        return {"output": 0.0}
     value = float(np.sqrt(np.mean(audio**2)))
     return {"output": value}
 
@@ -235,7 +236,7 @@ def audioparam_peak_node(
     audio = inputs.get("input")
 
     if audio is None:
-        return {"output": None, "value": 0.0}
+        return {"output": 0.0}
 
     value = float(np.max(np.abs(audio)))
     return {"output": value}
@@ -365,10 +366,17 @@ def sine_node(node: GraphNode, inputs: dict[str, Any], effect: None) -> dict[str
     }
 
 
-def get_graph() -> Graph:
+def get_graph() -> Graph | None:
     effects_path = Path(__file__).parent.parent / "effects.json"
-    with effects_path.open() as f:
-        return json.load(f)
+    try:
+        with effects_path.open() as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        print((f"Error: effects.json contains invalid JSON: {e}"))
+        return None
+    except Exception as e:
+        print(f"an unexpected error occured: {e}")
+        return None
 
 
 node_functions: dict[str, FxModuleFn] = {
